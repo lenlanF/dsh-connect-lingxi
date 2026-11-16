@@ -75,8 +75,7 @@ test('unapproved cloud sandbox and protocol-round exhaustion emit valid TOOL_PRO
 
   const refused = await finishFrom(adapter, { tools: [offeredTool] })
   assert.equal(refused.finish.reason.failure.code, 'TOOL_PROTOCOL')
-  assert.match(refused.finish.reason.failure.message, /after 3 rounds/)
-})
+  assert.match(refused.finish.reason.failure.message, /cloud sandbox.*3 turns/)})
 
 test('aborted turns include a failure code accepted by DSH error wrapping', async () => {
   const controller = new AbortController()

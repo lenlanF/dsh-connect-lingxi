@@ -3,7 +3,7 @@
 // tool-call-delta | block-end | usage | finish. See LlmRuntime.prepareRoutes.
 
 import { randomUUID } from 'node:crypto'
-import { visibleTools, recoverHostToolCalls, stringifyToolValue, hostMissingToolName, unavailableHostTools } from './host-tools.mjs'
+import { visibleTools, openAiTools, recoverHostToolCalls, stringifyToolValue, hostMissingToolName, unavailableHostTools } from './host-tools.mjs'
 
 const PROVIDER = 'lingxi'
 const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -82,6 +82,43 @@ function toChatMessages(options) {
     messages.push({ role, content })
   }
   return messages
+}
+
+
+/** Restore native OpenAI tool-call / tool-result structure for the REST API. */
+export function nativeMessages(options) {
+  const result = []
+  if (typeof options.system === 'string' && options.system.trim()) {
+    result.push({ role: 'system', content: options.system })
+  }
+  for (const msg of options.messages ?? []) {
+    if (!msg || typeof msg !== 'object') continue
+    const role = msg.role === 'developer' ? 'system' : msg.role
+    if (!['system', 'user', 'assistant', 'tool'].includes(role)) continue
+    if (role === 'tool') {
+      if (typeof msg.toolCallId !== 'string' || !msg.toolCallId) continue
+      const text = toChatMessages({ messages: [msg] })[0]?.content ?? ''
+      result.push({ role, tool_call_id: msg.toolCallId, content: text })
+      continue
+    }
+    const blocks = Array.isArray(msg.content) ? msg.content : []
+    const content = typeof msg.content === 'string' ? msg.content
+      : blocks.filter(b => b?.type === 'text').map(b => b.text ?? '').join('\n')
+    const entry = { role, content }
+    if (role === 'assistant') {
+      const calls = blocks.filter(b => b?.type === 'tool-call' &&
+        typeof b.name === 'string' && typeof (b.id ?? b.toolCallId) === 'string')
+      if (calls.length) {
+        entry.tool_calls = calls.map(b => ({
+          id: b.id ?? b.toolCallId, type: 'function',
+          function: { name: b.name, arguments: typeof b.arguments === 'string'
+            ? b.arguments : stringifyToolValue(b.arguments) },
+        }))
+      }
+    }
+    result.push(entry)
+  }
+  return result
 }
 
 function effortOf(value) {
@@ -248,20 +285,41 @@ export function createLingxiAdapter(deps) {
   }
 
   async function runUpstreamTurn(options, messages, signal, credential, activeTools) {
+    const native = activeTools.length > 0 && typeof client.chatNative === 'function'
     const chatOptions = {
       model: options.model,
-      messages,
+      messages: native ? nativeMessages(options) : messages,
+      ...(native ? { tools: openAiTools(activeTools) } : {}),
       ...effortOf(options.reasoningEffort) ? { reasoningEffort: effortOf(options.reasoningEffort) } : {},
       ...signal ? { signal } : {},
     }
     let text = ''
     let sandboxUsed = false
     let upstreamError = null
-    for await (const event of client.chat(credential, chatOptions)) {
+    const nativeCalls = []
+    for await (const event of (native
+      ? client.chatNative(credential, chatOptions) : client.chat(credential, chatOptions))) {
       if (signal?.aborted) return { kind: 'aborted', text, sandboxUsed }
       switch (event.type) {
         case 'text_delta': text += event.text; break
         case 'tool': sandboxUsed = true; break
+        case 'tool_call': {
+          if (!native) { upstreamError = { message: 'untrusted external tool-call event' }; break }
+          const parsed = recoverHostToolCalls(JSON.stringify({
+            type: 'tool-call', name: event.name, arguments: event.arguments,
+          }), activeTools)
+          if (parsed.status !== 'calls' || parsed.calls.length !== 1) {
+            return { kind: 'invalid', text: '',
+              message: 'Lingxi native tool call rejected: ' + (parsed.message ?? 'invalid tool call'),
+              repairable: false }
+          }
+          if (nativeCalls.length >= 8) {
+            return { kind: 'invalid', text: '',
+              message: 'Lingxi native tool call limit exceeded', repairable: false }
+          }
+          nativeCalls.push(parsed.calls[0])
+          break
+        }
         case 'error': upstreamError = { message: event.message ?? 'unknown upstream error', status: event.status }; break
         case 'usage':
           lastUsage = event.usage
@@ -274,6 +332,10 @@ export function createLingxiAdapter(deps) {
     // A cloud sandbox action is never equivalent to a DSH-authorized tool call.
     // Discard its output even if it appears beside a plausible host tool marker.
     if (sandboxUsed) return { kind: 'violation', text, sandboxUsed }
+    if (native) {
+      return nativeCalls.length ? { kind: 'tools', text, calls: nativeCalls, native: true }
+        : { kind: 'text', text }
+    }
     const parsed = recoverHostToolCalls(text, activeTools)
     if (parsed.status === 'invalid') return { kind: 'invalid', text: '', message: parsed.message,
       repairable: parsed.repairable === true }
@@ -367,7 +429,8 @@ export function createLingxiAdapter(deps) {
           const stripped = stripToolMarkers(verdict.text)
           // A full JSON tool-call response is protocol, never display text.
           // Marked replies may retain ordinary explanation outside the marker.
-          const clean = stripped === verdict.text.trim() ? '' : stripped
+          const clean = verdict.native ? verdict.text.trim()
+            : stripped === verdict.text.trim() ? '' : stripped
           if (clean) yield* append('text', clean)
           yield* closeAll()
           yield* emitToolCalls(verdict.calls)
@@ -385,7 +448,9 @@ export function createLingxiAdapter(deps) {
         yield { type: 'finish', reason: { kind: 'stop' } }
         return
       }
-      yield* fail('Lingxi refused the host tool protocol after ' + MAX_TOOL_ROUNDS + ' rounds; no tool result was released. Every tool action requires DSH permission.', 'TOOL_PROTOCOL')
+      yield* fail('Lingxi cowork upstream repeatedly used its own cloud sandbox instead of DSH host tools (' +
+        MAX_TOOL_ROUNDS + ' turns). No cloud result was treated as a DSH host execution. ' +
+        'Use the native agent-runtime tool route or verify the upstream tool capability.', 'TOOL_PROTOCOL')
     } catch (error) {
       const message = error?.message ?? String(error)
       log('error', 'stream failed: ' + message)

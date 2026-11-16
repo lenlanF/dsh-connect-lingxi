@@ -19,6 +19,7 @@ import {
                      
 } from "./protocol.mjs"
 import { CoworkStreamIterator } from "./stream.mjs"
+import { nativeChat } from "./native.mjs"
 
 /** Factory options: production uses all defaults; tests inject both seams. */
                                             
@@ -136,6 +137,12 @@ class CoworkLingxiClient                         {
 
   chat(credential                  , options                   )                                   {
     return this.runChat(credential, options)
+  }
+
+  // Structured tool calls use the native agent-runtime HTTP/SSE channel.
+  // Never substitute the cowork cloud sandbox for a DSH-host tool.
+  chatNative(credential, options) {
+    return nativeChat(this.deps.fetchLike, credential, options)
   }
 
   ;       async *runChat(
