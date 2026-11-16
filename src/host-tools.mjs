@@ -259,11 +259,24 @@ export function unavailableHostTools(messages) {
   if (!Array.isArray(messages)) return unavailable
   for (const msg of messages.slice(-32)) {
     if (msg?.role !== 'tool') continue
+    // The actual DSH tool message has isError on the message, not inside
+    // each content block. A successful echo containing an error string must
+    // never revoke a tool. Unmarked legacy fixtures require a tool-result block.
+    if (msg.isError === false) continue
     const blocks = Array.isArray(msg.content) ? msg.content : [msg.content]
     for (const block of blocks) {
-      const value = block?.type === 'tool-result'
-        ? block.content ?? block.result ?? block.output ?? block.text ?? block.error
-        : block
+      let value
+      if (msg.isError === true) {
+        value = typeof block === 'string' ? block
+          : block?.type === 'text' ? block.text
+          : block?.type === 'tool-result'
+            ? block.content ?? block.result ?? block.output ?? block.text ?? block.error
+            : block
+      } else if (block?.type === 'tool-result') {
+        value = block.content ?? block.result ?? block.output ?? block.text ?? block.error
+      } else {
+        continue
+      }
       const name = hostMissingToolName(value)
       if (name) unavailable.add(name)
     }

@@ -64,6 +64,20 @@ function toChatMessages(options) {
     if (role === 'developer') role = 'system'
     if (role !== 'system' && role !== 'user' && role !== 'assistant' && role !== 'tool') role = 'user'
     const content = flattenContent(message.content)
+    if (role === 'tool') {
+      // DSH createToolResultMessage() reports failure at MESSAGE level:
+      // { role: 'tool', toolCallId, isError, content: [{ type: 'text', text }] }.
+      // Legacy test fixtures may already supply an inner tool-result envelope.
+      const embeddedResult = Array.isArray(message.content) &&
+        message.content.some((block) => block?.type === 'tool-result')
+      const status = message.isError === true ? 'FAILED'
+        : message.isError === false ? 'SUCCESS' : 'UNVERIFIED'
+      const label = '[DSH tool result' +
+        (message.toolCallId ? ' id=' + String(message.toolCallId) : '') +
+        ' status=' + status + ']: '
+      messages.push({ role, content: embeddedResult ? content : label + (content || '(empty result)') })
+      continue
+    }
     if (!content.trim()) continue
     messages.push({ role, content })
   }

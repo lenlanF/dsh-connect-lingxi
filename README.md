@@ -24,7 +24,7 @@ WPS upstream behavior varies; tool-call compatibility is verified with offline f
 
 **工具参数校验补丁（2026-11-16）**：提交 DSH 工具调用之前，校验 JSON Schema 的必填字段、类型、枚举及嵌套属性；对漏填的参数提供至多 3 轮模型纠错机会，持续失败则安全拒绝。工具结果的错误状态会明确标记，避免将失败误报为成功。
 
-**DSH Connect Lingxi** 是将 WPS 灵犀接入 DeepSeek Harness Desktop 的社区插件（v0.5.0）。提供流式模型调用、账号池、余额信息和 DSH 工具协议桥接。非 WPS 或 DeepSeek 官方项目。
+**DSH Connect Lingxi** 是将 WPS 灵犀接入 DeepSeek Harness Desktop 的社区插件（v0.5.5）。提供流式模型调用、账号池、余额信息和 DSH 工具协议桥接。非 WPS 或 DeepSeek 官方项目。
 
 ### 核心功能
 
@@ -42,7 +42,7 @@ cd dsh-connect-lingxi
 npm test
 ```
 
-净化版离线测试 **89/89 通过**。另有 `npm run test:machine` 测试依赖真实 WPS 本机会话与 SQLite；运行可能受登录状态及数据库锁影响。需要兼容的 DSH Desktop，插件入口为 `src/index.mjs`，管理页面 `client.js`。
+净化版离线测试 **96/96 通过**。另有 `npm run test:machine` 测试依赖真实 WPS 本机会话与 SQLite；运行可能受登录状态及数据库锁影响。需要兼容的 DSH Desktop，插件入口为 `src/index.mjs`，管理页面 `client.js`。
 
 ### 安全限制
 
@@ -59,3 +59,7 @@ npm test
 ### 工具标记格式恢复（2026-11-16）
 
 当灵犀响应出现不完整或重复的工具标记时，插件先拒绝无效调用，再在不触发任何宿主命令的情况下进行最多 3 轮模型修正；优先使用完整的 JSON 工具调用封装，不再要求模型复制含非法占位符的 XML 示例。Markdown 代码示例中的标记不被当成可执行工具调用。真实 DSH 工具权限及执行仍完全由宿主控制。
+
+### DSH 原生工具结果兼容（0.5.5）
+
+与 DSH Desktop 实际的工具消息结构对齐：宿主工具结果采用 role:tool，并通过消息级 isError 标识失败；现在灵犀会显式展示 status=FAILED / status=SUCCESS 与 toolCallId，并仅依据真正的宿主失败结果识别不存在的工具。PTC 模式下 run_code 是唯一直接执行入口；bash 等子工具应由 run_code 内部调用，不能作为独立的 PTC 顶层请求。安装包升级需要在 DSH Desktop 中手动操作，此补丁不会修改现有会话或账号配置。
