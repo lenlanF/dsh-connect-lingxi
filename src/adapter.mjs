@@ -23,12 +23,21 @@ function flattenContent(content) {
       case 'tool-call':
         parts.push('[previous tool call: ' + String(block.name ?? '') + ' ' + stringifyToolValue(block.arguments) + ']')
         break
-      case 'tool-result':
+      case 'tool-result': {
+        const result = block.content ?? block.text ?? block.result ?? block.output
+        const failed = block.isError === true || block.error != null ||
+          result?.isError === true || result?.ok === false ||
+          result?.success === false ||
+          (typeof result?.exitCode === 'number' && result.exitCode !== 0)
+        const succeeded = !failed && (result?.ok === true || result?.success === true ||
+          (typeof result?.exitCode === 'number' && result.exitCode === 0))
         parts.push('[DSH tool result' +
           (block.id || block.toolCallId ? ' id=' + String(block.id ?? block.toolCallId) : '') +
           (block.name ? ' name=' + String(block.name) : '') +
-          ']: ' + stringifyToolValue(block.content ?? block.text ?? block.result ?? block.output).slice(0, 20000))
+          (failed ? ' status=FAILED' : succeeded ? ' status=SUCCESS' : ' status=UNVERIFIED') +
+          ']: ' + stringifyToolValue(result).slice(0, 20000))
         break
+      }
       case 'image':
       case 'file':
         parts.push('[' + block.type + ' attachment omitted: Lingxi upstream is text-only here]')
@@ -79,14 +88,19 @@ function toolsPreamble(tools) {
     '[TOOL PROTOCOL - host-provided external tools]',
     'When a task needs one of the tools below, output EXACTLY one marker line and no prose in that turn:',
     TOOL_OPEN + '{"name":"<tool_name>","arguments":{<json object>}}' + TOOL_CLOSE,
-    'The host will execute the tool and return its result as a later message beginning with "[tool result:".',
+    'The DSH host, not you, decides whether to approve and execute any tool call. Results arrive as messages beginning with "[DSH tool result".',
+    'Before requesting a tool, include EVERY required argument with the correct JSON type; never send {} if the schema has required properties.',
+    'If a tool returns an error, status=FAILED, or invalid arguments, report the failure explicitly and correct the call when possible.',
+    'Never claim command execution was successful without an actual DSH tool result confirming success.',
     'Never invent tool results, never answer from imagination before the result arrives, and never use your built-in sandbox for a host tool.',
     'Available tools:',
   ]
   for (const tool of visibleTools(tools)) {
     let params = '{}'
     try { params = JSON.stringify(tool.parameters ?? {}) } catch {}
-    lines.push('- ' + tool.name + ': ' + String(tool.description ?? '').replace(/\s+/g, ' ').slice(0, 240) + ' | parameters: ' + params.slice(0, 800))
+    const required = Array.isArray(tool.parameters?.required) ? tool.parameters.required : []
+    lines.push('- ' + tool.name + ': ' + String(tool.description ?? '').replace(/\s+/g, ' ').slice(0, 240) +
+      ' | REQUIRED ARGUMENTS: ' + JSON.stringify(required) + ' | parameters: ' + params.slice(0, 2400))
   }
   return lines.join('\n')
 }
@@ -239,7 +253,8 @@ export function createLingxiAdapter(deps) {
     // Discard its output even if it appears beside a plausible host tool marker.
     if (sandboxUsed) return { kind: 'violation', text, sandboxUsed }
     const parsed = recoverHostToolCalls(text, options.tools)
-    if (parsed.status === 'invalid') return { kind: 'invalid', text: '', message: parsed.message }
+    if (parsed.status === 'invalid') return { kind: 'invalid', text: '', message: parsed.message,
+      repairable: parsed.repairable === true }
     if (parsed.status === 'calls') return { kind: 'tools', text, calls: parsed.calls }
     return { kind: 'text', text, sandboxUsed }
   }
@@ -293,7 +308,17 @@ export function createLingxiAdapter(deps) {
           return
         }
         if (verdict.kind === 'error') { yield* fail('WPS Lingxi upstream error: ' + verdict.message, verdict.code); return }
-        if (verdict.kind === 'invalid') { yield* fail('DSH tool protocol rejected: ' + verdict.message, 'TOOL_PROTOCOL'); return }
+        if (verdict.kind === 'invalid') {
+          if (verdict.repairable && round + 1 < MAX_TOOL_ROUNDS) {
+            // Invalid calls are NEVER submitted to the DSH host. Give the model
+            // the exact schema error and one more chance to return valid JSON.
+            messages.push({ role: 'system', content: '[TOOL ARGUMENT VALIDATION FAILED] ' + verdict.message +
+              '. The previous tool call was NOT executed. Re-read the offered schema and respond with a corrected tool call that includes every required argument, or say the tool cannot be used. Never claim it succeeded.' })
+            continue
+          }
+          yield* fail('DSH tool protocol rejected: ' + verdict.message, 'TOOL_PROTOCOL')
+          return
+        }
         if (verdict.kind === 'tools') {
           const stripped = stripToolMarkers(verdict.text)
           // A full JSON tool-call response is protocol, never display text.

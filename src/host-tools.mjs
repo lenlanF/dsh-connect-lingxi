@@ -44,6 +44,88 @@ export function normalizedArguments(value) {
   try { return JSON.stringify(parsed) } catch { return null }
 }
 
+/**
+ * Validate the subset of JSON Schema constraints advertised by the DSH host.
+ * Never guess or fill in missing arguments: the host is still the authority.
+ * Unknown schema extensions remain host-owned, while known invalid calls
+ * must not be emitted to DSH as apparently valid tool-call chunks.
+ * @returns {string|null} an actionable error or null when locally valid.
+ */
+export function validateToolArguments(value, schema, path = 'arguments', depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return null
+  if (depth >= 12) return path + ': tool argument schema exceeds safe nesting depth'
+
+  const descend = (item, childSchema, childPath) =>
+    validateToolArguments(item, childSchema, childPath, depth + 1)
+  const oneOf = schema.oneOf
+  const anyOf = schema.anyOf
+  if (Array.isArray(oneOf) && oneOf.length &&
+      oneOf.filter((branch) => !descend(value, branch, path)).length !== 1)
+    return path + ': arguments must match exactly one allowed schema'
+  if (Array.isArray(anyOf) && anyOf.length && !anyOf.some((branch) => !descend(value, branch, path)))
+    return path + ': arguments do not match any allowed schema'
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) {
+      const error = descend(value, branch, path)
+      if (error) return error
+    }
+  }
+  const actual = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+  const acceptedTypes = typeof schema.type === 'string' ? [schema.type]
+    : Array.isArray(schema.type) ? schema.type : []
+  const matches = (type) => type === actual ||
+    (type === 'integer' && actual === 'number' && Number.isInteger(value)) ||
+    (type === 'number' && actual === 'number')
+  if (acceptedTypes.length && !acceptedTypes.some(matches) &&
+      !(schema.nullable === true && value === null))
+    return path + ': expected ' + acceptedTypes.join(' or ') + ', got ' + actual
+
+  if (Array.isArray(schema.enum) && !schema.enum.some((v) => JSON.stringify(v) === JSON.stringify(value)))
+    return path + ': value is not in the allowed enum'
+  if (Object.hasOwn(schema, 'const') && JSON.stringify(schema.const) !== JSON.stringify(value))
+    return path + ': value must equal the defined constant'
+
+  if (value !== null && actual === 'object') {
+    const required = Array.isArray(schema.required) ? schema.required : []
+    const missing = required.filter((key) =>
+      typeof key === 'string' && !Object.hasOwn(value, key))
+    if (missing.length) return path + ': missing required ' +
+      (missing.length === 1 ? 'property ' : 'properties ') + missing.map((key) => '"' + key + '"').join(', ')
+    const properties = schema.properties && typeof schema.properties === 'object' &&
+      !Array.isArray(schema.properties) ? schema.properties : {}
+    for (const [key, child] of Object.entries(value)) {
+      if (Object.hasOwn(properties, key)) {
+        const error = descend(child, properties[key], path + '.' + key)
+        if (error) return error
+      } else if (schema.additionalProperties === false) {
+        return path + ': unsupported property "' + key + '"'
+      } else if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+        const error = descend(child, schema.additionalProperties, path + '.' + key)
+        if (error) return error
+      }
+    }
+  }
+  if (actual === 'array') {
+    if (Number.isInteger(schema.minItems) && value.length < schema.minItems)
+      return path + ': requires at least ' + schema.minItems + ' items'
+    if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems)
+      return path + ': exceeds maximum ' + schema.maxItems + ' items'
+    if (schema.items && typeof schema.items === 'object') {
+      for (let i = 0; i < value.length; i++) {
+        const error = descend(value[i], schema.items, path + '[' + i + ']')
+        if (error) return error
+      }
+    }
+  }
+  if (actual === 'string') {
+    if (Number.isInteger(schema.minLength) && value.length < schema.minLength)
+      return path + ': requires at least ' + schema.minLength + ' characters'
+    if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength)
+      return path + ': exceeds maximum ' + schema.maxLength + ' characters'
+  }
+  return null
+}
+
 const OPEN = '<dsh_tool>'
 const CLOSE = '</dsh_tool>'
 const MARKERS = /<dsh_tool>([\s\S]*?)<\/dsh_tool>/g
@@ -60,7 +142,7 @@ export function recoverHostToolCalls(text, tools) {
     status: text.includes(OPEN) || text.includes('"type":"tool-call"') ? 'invalid' : 'none',
     calls: [], message: 'Tool response exceeded the safe size limit',
   }
-  const allowed = new Set(visibleTools(tools).map((tool) => tool.name))
+  const allowed = new Map(visibleTools(tools).map((tool) => [tool.name, tool]))
   const marked = [...text.matchAll(MARKERS)]
   const hasMarker = text.includes(OPEN) || text.includes(CLOSE)
   let raw = []
@@ -100,6 +182,9 @@ export function recoverHostToolCalls(text, tools) {
     }
     const args = normalizedArguments(item.arguments)
     if (args === null) return { status: 'invalid', calls: [], message: 'Invalid JSON tool arguments for ' + name }
+    const problem = validateToolArguments(JSON.parse(args), allowed.get(name).parameters)
+    if (problem) return { status: 'invalid', calls: [], repairable: true,
+      message: 'Tool ' + name + ' has invalid arguments: ' + problem }
     calls.push({ name, arguments: args })
   }
   return { status: 'calls', calls }
