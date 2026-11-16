@@ -19,7 +19,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test tests/adapter.test.mjs tests/cowork.test.mjs tests/failure-code.test.mjs tests/host-tools.test.mjs tests/index.test.mjs tests/routes.test.mjs tests/tool-loop.test.mjs tests/upstream.test.mjs tests/schema-validation.test.mjs",
+    "test": "node --test tests/adapter.test.mjs tests/cowork.test.mjs tests/failure-code.test.mjs tests/host-tools.test.mjs tests/index.test.mjs tests/routes.test.mjs tests/tool-loop.test.mjs tests/upstream.test.mjs tests/schema-validation.test.mjs tests/host-availability.test.mjs",
     "test:machine": "node --experimental-sqlite --test tests/credential.test.mjs tests/pool.test.mjs"
   },
   "dsh": {

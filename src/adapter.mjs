@@ -3,7 +3,7 @@
 // tool-call-delta | block-end | usage | finish. See LlmRuntime.prepareRoutes.
 
 import { randomUUID } from 'node:crypto'
-import { visibleTools, recoverHostToolCalls, stringifyToolValue } from './host-tools.mjs'
+import { visibleTools, recoverHostToolCalls, stringifyToolValue, hostMissingToolName, unavailableHostTools } from './host-tools.mjs'
 
 const PROVIDER = 'lingxi'
 const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -26,8 +26,12 @@ function flattenContent(content) {
       case 'tool-result': {
         const result = block.content ?? block.text ?? block.result ?? block.output
         const failed = block.isError === true || block.error != null ||
+          String(block.status ?? '').toLowerCase() === 'failed' ||
           result?.isError === true || result?.ok === false ||
           result?.success === false ||
+          ['failed', 'error'].includes(String(result?.status ?? '').toLowerCase()) ||
+          (!(result?.ok === true || result?.success === true || result?.exitCode === 0) &&
+            hostMissingToolName(result) !== null) ||
           (typeof result?.exitCode === 'number' && result.exitCode !== 0)
         const succeeded = !failed && (result?.ok === true || result?.success === true ||
           (typeof result?.exitCode === 'number' && result.exitCode === 0))
@@ -89,6 +93,9 @@ function toolsPreamble(tools) {
     'When a task needs one of the tools below, output EXACTLY one marker line and no prose in that turn:',
     TOOL_OPEN + '{"name":"<tool_name>","arguments":{<json object>}}' + TOOL_CLOSE,
     'The DSH host, not you, decides whether to approve and execute any tool call. Results arrive as messages beginning with "[DSH tool result".',
+    'Only names in the Available tools list below are valid in THIS turn. Past messages and old tool lists do not authorize a name.',
+    'Never assume a universal tool wrapper or alias exists. Do not invent tool names.',
+    'If a REAL DSH host tool result says a tool does not exist, do not retry it with alternate JSON or marker syntax.',
     'Before requesting a tool, include EVERY required argument with the correct JSON type; never send {} if the schema has required properties.',
     'If a tool returns an error, status=FAILED, or invalid arguments, report the failure explicitly and correct the call when possible.',
     'Never claim command execution was successful without an actual DSH tool result confirming success.',
@@ -225,7 +232,7 @@ export function createLingxiAdapter(deps) {
     return 'TRANSPORT'
   }
 
-  async function runUpstreamTurn(options, messages, signal, credential) {
+  async function runUpstreamTurn(options, messages, signal, credential, activeTools) {
     const chatOptions = {
       model: options.model,
       messages,
@@ -252,7 +259,7 @@ export function createLingxiAdapter(deps) {
     // A cloud sandbox action is never equivalent to a DSH-authorized tool call.
     // Discard its output even if it appears beside a plausible host tool marker.
     if (sandboxUsed) return { kind: 'violation', text, sandboxUsed }
-    const parsed = recoverHostToolCalls(text, options.tools)
+    const parsed = recoverHostToolCalls(text, activeTools)
     if (parsed.status === 'invalid') return { kind: 'invalid', text: '', message: parsed.message,
       repairable: parsed.repairable === true }
     if (parsed.status === 'calls') return { kind: 'tools', text, calls: parsed.calls }
@@ -260,10 +267,27 @@ export function createLingxiAdapter(deps) {
   }
 
   async function* stream(options) {
-    const hasTools = Array.isArray(options.tools) && options.tools.length > 0
-    const preamble = toolsPreamble(options.tools)
+    const missing = unavailableHostTools(options.messages)
+    const activeTools = visibleTools(options.tools).filter((tool) => !missing.has(tool.name))
+    const hasTools = activeTools.length > 0
+    const preamble = toolsPreamble(activeTools)
     const baseMessages = toChatMessages(options)
-    const messages = preamble ? [{ role: 'system', content: preamble }, ...baseMessages] : baseMessages.slice()
+    const notices = [
+      ...missing.size ? [
+        '[DSH HOST TOOL NOT REGISTERED] An actual host result reported that these tools do not exist: ' +
+          [...missing].join(', ') + '. Do not retry these names with another syntax or alias. ' +
+          'Use another explicitly available tool only if it has the necessary capability, otherwise report the limitation.'
+      ] : [],
+      ...!hasTools ? [
+        '[DSH HOST TOOL INVENTORY] No host tools are available in this turn. ' +
+          'Do not use names from previous messages, examples, or imagined wrapper functions. Report inability to execute.'
+      ] : [],
+    ]
+    const messages = [
+      ...preamble ? [{ role: 'system', content: preamble }] : [],
+      ...notices.map((content) => ({ role: 'system', content })),
+      ...baseMessages,
+    ]
 
     let nextIndex = 0
     const open = new Map()
@@ -301,7 +325,7 @@ export function createLingxiAdapter(deps) {
     try {
       const credential = await resolveCredential()
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-        const verdict = await runUpstreamTurn(options, messages, options.signal, credential)
+        const verdict = await runUpstreamTurn(options, messages, options.signal, credential, activeTools)
         if (verdict.kind === 'aborted') {
           yield* closeAll()
           yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'request aborted by caller' } } }

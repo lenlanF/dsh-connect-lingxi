@@ -193,3 +193,44 @@ export function recoverHostToolCalls(text, tools) {
 export function removeToolMarkers(text) {
   return String(text ?? '').replace(MARKERS, '').trim()
 }
+
+/** Recognize explicit "tool does not exist" diagnostics from actual host results. */
+export function hostMissingToolName(value) {
+  // Only diagnostic fields count. In particular, a successful command whose
+  // stdout quotes an error message must NOT revoke any DSH host tool.
+  const candidates = typeof value === 'string' ? [value] : [
+    typeof value?.error === 'string' ? value.error : value?.error?.message,
+    value?.message,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length > 20000) continue
+    const text = candidate.trim()
+    for (const re of [
+      /^(?:(?:工具调用失败|工具执行失败|Error|Tool call failed)\s*[:：]\s*)?工具\s*["'\`]?([A-Za-z_][\w.-]{0,127})["'\`]?\s*(?:不存在|未注册|不可用)/i,
+      /^(?:Error\s*[:：]\s*)?tool\s+["'\`]?([A-Za-z_][\w.-]{0,127})["'\`]?\s+(?:does\s+not\s+exist|doesn't\s+exist|not\s+found|not\s+registered|not\s+available|unavailable)\b/i,
+      /^(?:Error\s*[:：]\s*)?(?:unknown|unrecognized)\s+tool\s+["'\`]?([A-Za-z_][\w.-]{0,127})/i,
+    ]) {
+      const match = re.exec(text)
+      if (match) return match[1]
+    }
+  }
+  return null
+}
+
+/** Only role:tool host results, not model claims or user text, revoke a stale tool. */
+export function unavailableHostTools(messages) {
+  const unavailable = new Set()
+  if (!Array.isArray(messages)) return unavailable
+  for (const msg of messages.slice(-32)) {
+    if (msg?.role !== 'tool') continue
+    const blocks = Array.isArray(msg.content) ? msg.content : [msg.content]
+    for (const block of blocks) {
+      const value = block?.type === 'tool-result'
+        ? block.content ?? block.result ?? block.output ?? block.text ?? block.error
+        : block
+      const name = hostMissingToolName(value)
+      if (name) unavailable.add(name)
+    }
+  }
+  return unavailable
+}
