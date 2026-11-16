@@ -1,0 +1,44 @@
+{
+  "name": "dsh-connect-lingxi",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "description": "Native DSH provider for WPS Lingxi desktop, using the local sign-in and cowork WebSocket channel.",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./types": "./src/types.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./client": "./client.js"
+  },
+  "files": [
+    "src",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/adapter.test.mjs tests/cowork.test.mjs tests/failure-code.test.mjs tests/host-tools.test.mjs tests/index.test.mjs tests/routes.test.mjs tests/tool-loop.test.mjs tests/upstream.test.mjs",
+    "test:machine": "node --experimental-sqlite --test tests/credential.test.mjs tests/pool.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.2 <5",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.2.0-rc.2 <0.3.0-0"
+  }
+}
