@@ -90,8 +90,9 @@ function toolsPreamble(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return ''
   const lines = [
     '[TOOL PROTOCOL - host-provided external tools]',
-    'When a task needs one of the tools below, output EXACTLY one marker line and no prose in that turn:',
-    TOOL_OPEN + '{"name":"<tool_name>","arguments":{<json object>}}' + TOOL_CLOSE,
+    'When a task needs a listed host tool, output exactly ONE complete JSON object, without Markdown or prose.',
+    'The JSON must contain "type":"tool-call", "name" (the exact listed tool name), and "arguments" (a JSON object with every required field).',
+    'Never output partial JSON, sample placeholders, unmatched XML tags, or quoted examples as a tool request.',
     'The DSH host, not you, decides whether to approve and execute any tool call. Results arrive as messages beginning with "[DSH tool result".',
     'Only names in the Available tools list below are valid in THIS turn. Past messages and old tool lists do not authorize a name.',
     'Never assume a universal tool wrapper or alias exists. Do not invent tool names.',
@@ -336,8 +337,13 @@ export function createLingxiAdapter(deps) {
           if (verdict.repairable && round + 1 < MAX_TOOL_ROUNDS) {
             // Invalid calls are NEVER submitted to the DSH host. Give the model
             // the exact schema error and one more chance to return valid JSON.
-            messages.push({ role: 'system', content: '[TOOL ARGUMENT VALIDATION FAILED] ' + verdict.message +
-              '. The previous tool call was NOT executed. Re-read the offered schema and respond with a corrected tool call that includes every required argument, or say the tool cannot be used. Never claim it succeeded.' })
+            const badFormat = /^(Malformed DSH tool marker|Malformed tool-call JSON|Incomplete or malformed tool-call JSON|Quoted DSH tool marker)/.test(verdict.message)
+            messages.push({ role: 'system', content:
+              (badFormat ? '[TOOL FORMAT VALIDATION FAILED] ' : '[TOOL ARGUMENT VALIDATION FAILED] ') +
+              verdict.message + '. The previous tool call was NOT executed. ' +
+              'Respond with one complete JSON object containing "type":"tool-call", "name", and valid "arguments". ' +
+              'Use only a currently offered host tool and include every required argument. ' +
+              'No XML markers, code fences, partial JSON, or prose. If no available tool can complete the task, explain the limitation. Never claim it succeeded.' })
             continue
           }
           yield* fail('DSH tool protocol rejected: ' + verdict.message, 'TOOL_PROTOCOL')

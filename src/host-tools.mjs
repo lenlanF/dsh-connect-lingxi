@@ -143,34 +143,70 @@ export function recoverHostToolCalls(text, tools) {
     calls: [], message: 'Tool response exceeded the safe size limit',
   }
   const allowed = new Map(visibleTools(tools).map((tool) => [tool.name, tool]))
-  const marked = [...text.matchAll(MARKERS)]
-  const hasMarker = text.includes(OPEN) || text.includes(CLOSE)
   let raw = []
-  if (hasMarker) {
+  let source = text.trim()
+  const jsonFence = /^\x60{3}(?:json)?\s*\n([\s\S]*?)\n\x60{3}$/i.exec(source)
+  if (jsonFence) source = jsonFence[1].trim()
+
+  // A complete JSON envelope wins over marker-looking strings embedded in
+  // its arguments, e.g. a command whose literal code contains <dsh_tool>.
+  if (source.startsWith('{') || source.startsWith('[')) {
+    let parsed
+    try { parsed = JSON.parse(source) }
+    catch {
+      if (/"type"\s*:\s*"tool-call"/.test(source)) {
+        return { status: 'invalid', calls: [], repairable: true,
+          message: 'Incomplete or malformed tool-call JSON' }
+      }
+    }
+    if (parsed !== undefined) {
+      const list = Array.isArray(parsed) ? parsed : [parsed]
+      if (!list.length || !list.every((item) =>
+        item && typeof item === 'object' && item.type === 'tool-call')) {
+        return { status: 'none', calls: [] }
+      }
+      if (list.length > MAX_CALLS) {
+        return { status: 'invalid', calls: [],
+          message: 'Too many tool calls' }
+      }
+      raw = list
+    }
+  }
+
+  if (!raw.length) {
+    // A Markdown code example must never turn into a host call. If a reply
+    // contains both a quoted and live marker, reject it atomically.
+    let quotedMarker = false
+    const outsideCode = text
+      .replace(/\x60{3}[\s\S]*?\x60{3}|~~~[\s\S]*?~~~/g, (block) => {
+        if (block.includes(OPEN) || block.includes(CLOSE)) quotedMarker = true
+        return ' '
+      })
+      .replace(/\x60[^\x60\n]*\x60/g, (block) => {
+        if (block.includes(OPEN) || block.includes(CLOSE)) quotedMarker = true
+        return ' '
+      })
+    const hasMarker = outsideCode.includes(OPEN) || outsideCode.includes(CLOSE)
+    if (quotedMarker) {
+      if (!hasMarker) return { status: 'none', calls: [] }
+      return { status: 'invalid', calls: [], repairable: true,
+        message: 'Quoted DSH tool marker mixed with a real tool request' }
+    }
+    if (!hasMarker) return { status: 'none', calls: [] }
+    const marked = [...outsideCode.matchAll(MARKERS)]
+    const remainder = outsideCode.replace(MARKERS, '')
     if (!marked.length || marked.length > MAX_CALLS ||
-        text.replace(MARKERS, '').includes(OPEN) || text.replace(MARKERS, '').includes(CLOSE)) {
-      return { status: 'invalid', calls: [], message: 'Malformed DSH tool marker' }
+        remainder.includes(OPEN) || remainder.includes(CLOSE)) {
+      return { status: 'invalid', calls: [], repairable: true,
+        message: 'Malformed DSH tool marker' }
     }
     for (const match of marked) {
       try { raw.push(JSON.parse(match[1])) }
-      catch { return { status: 'invalid', calls: [], message: 'Malformed tool-call JSON' } }
+      catch {
+        return { status: 'invalid', calls: [], repairable: true,
+          message: 'Malformed tool-call JSON inside DSH marker' }
+      }
     }
-  } else {
-    let trimmed = text.trim()
-    const fence = /^\x60\x60\x60(?:json)?\s*\n([\s\S]*?)\n\x60\x60\x60$/i.exec(trimmed)
-    if (fence) trimmed = fence[1].trim()
-    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return { status: 'none', calls: [] }
-    let obj
-    try { obj = JSON.parse(trimmed) } catch {
-      return trimmed.includes('"type":"tool-call"') || trimmed.includes('"type": "tool-call"')
-        ? { status: 'invalid', calls: [], message: 'Incomplete or malformed tool-call JSON' }
-        : { status: 'none', calls: [] }
-    }
-    const list = Array.isArray(obj) ? obj : [obj]
-    if (!list.length || !list.every((call) => call && typeof call === 'object' && call.type === 'tool-call'))
-      return { status: 'none', calls: [] }
-    if (list.length > MAX_CALLS) return { status: 'invalid', calls: [], message: 'Too many tool calls' }
-    raw = list
   }
   if (!raw.length) return { status: 'none', calls: [] }
   if (!allowed.size) return { status: 'invalid', calls: [], message: 'No host tools are available in this turn' }

@@ -112,7 +112,7 @@ test('toolsPreamble declares host ToolSchema list', () => {
   const p = toolsPreamble([{ name: 'read_file', description: 'read a file', parameters: { type: 'object', properties: { path: { type: 'string' } } } }])
   assert.match(p, /TOOL PROTOCOL/)
   assert.match(p, /read_file/)
-  assert.match(p, /dsh_tool/)
+  assert.match(p, /"type":"tool-call"/)
   assert.equal(toolsPreamble([]), '')
   assert.equal(toolsPreamble(undefined), '')
 })
