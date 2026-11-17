@@ -134,6 +134,90 @@ test('native mode rejects unknown upstream tool instead of executing it', async 
   assert.equal(chunks.some(x=>x.type==='tool-call-delta'),false)
 })
 
+test('unknown native planning tool is rejected, repaired, and replaced by an actual offered host tool', async () => {
+  let completions = 0
+  const { fn, calls } = fakeFetch([])
+  const adaptedFetch = async (url, init) => {
+    if (!url.endsWith('/chat/completions')) return fn(url, init)
+    calls.push({ url, init })
+    completions++
+    return sse({ code: 'Success', choices: [{
+      tool_calls: [{ index: 0, id: 'model_' + completions, function: {
+        name: completions === 1 ? 'todo_write' : 'run_code',
+        arguments: completions === 1 ? '{"todos":[]}' : toolArgs,
+      } }],
+      finish_reason: 'tool_calls',
+    }] })
+  }
+  const client = createLingxiClient({ transport: { fetchLike: adaptedFetch } })
+  const adapter = createLingxiAdapter({ client, resolveCredential: async () => CREDENTIAL })
+  const chunks = []
+  for await (const chunk of adapter.stream({
+    model: 'offline', tools: [TOOL],
+    messages: [{ role: 'user', content: 'Build a Python CSV application' }],
+  })) chunks.push(chunk)
+  assert.equal(completions, 2)
+  const emitted = chunks.filter(x => x.type === 'tool-call-delta')
+  assert.deepEqual(emitted.map(x => x.name), ['run_code'])
+  assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
+  const first = JSON.parse(calls[2].init.body)
+  const second = JSON.parse(calls[5].init.body)
+  assert.deepEqual(first.tools.map(x => x.function.name), ['run_code'])
+  assert.match(JSON.stringify(first.messages), /Only these function names/)
+  assert.match(JSON.stringify(second.messages), /todo_write/)
+  assert.match(JSON.stringify(second.messages), /NONE of the tool calls/)
+})
+
+test('repeated unknown native tool requests never reach host and terminate after bounded retries', async () => {
+  let completions = 0
+  const { fn } = fakeFetch([])
+  const adaptedFetch = async (url, init) => {
+    if (!url.endsWith('/chat/completions')) return fn(url, init)
+    completions++
+    return sse({ code: 'Success', choices: [{
+      tool_calls: [{ index: 0, function: { name: 'todo_write', arguments: '{}' } }],
+      finish_reason: 'tool_calls',
+    }] })
+  }
+  const client = createLingxiClient({ transport: { fetchLike: adaptedFetch } })
+  const adapter = createLingxiAdapter({ client, resolveCredential: async () => CREDENTIAL })
+  const chunks = []
+  for await (const chunk of adapter.stream({
+    model: 'offline', tools: [TOOL], messages: [{ role: 'user', content: 'Test' }],
+  })) chunks.push(chunk)
+  assert.equal(completions, 3)
+  assert.equal(chunks.some(x => x.type === 'tool-call-delta'), false)
+  assert.equal(chunks.at(-1).reason.failure.code, 'TOOL_PROTOCOL')
+  assert.match(chunks.at(-1).reason.failure.message, /todo_write/)
+})
+
+test('a mixed native batch with an unoffered tool is rejected atomically before retry', async () => {
+  let completions = 0
+  const { fn } = fakeFetch([])
+  const adaptedFetch = async (url, init) => {
+    if (!url.endsWith('/chat/completions')) return fn(url, init)
+    completions++
+    return sse({ code: 'Success', choices: [{
+      tool_calls: completions === 1
+        ? [
+          { index: 0, function: { name: 'run_code', arguments: toolArgs } },
+          { index: 1, function: { name: 'todo_write', arguments: '{}' } },
+        ]
+        : [{ index: 0, function: { name: 'run_code', arguments: toolArgs } }],
+      finish_reason: 'tool_calls',
+    }] })
+  }
+  const client = createLingxiClient({ transport: { fetchLike: adaptedFetch } })
+  const adapter = createLingxiAdapter({ client, resolveCredential: async () => CREDENTIAL })
+  const chunks = []
+  for await (const chunk of adapter.stream({
+    model: 'offline', tools: [TOOL], messages: [{ role: 'user', content: 'Test' }],
+  })) chunks.push(chunk)
+  assert.equal(completions, 2)
+  assert.deepEqual(chunks.filter(x => x.type === 'tool-call-delta').map(x => x.name), ['run_code'])
+  assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
+})
+
 test('native HTTP errors provide status and never leak the cookie',async()=>{
   const fetchLike=async(url)=>{
     if(url.endsWith('/cowork/sessions'))return {ok:false,status:403}

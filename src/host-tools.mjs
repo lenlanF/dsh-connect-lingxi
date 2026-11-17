@@ -214,7 +214,8 @@ export function recoverHostToolCalls(text, tools) {
   for (const item of raw) {
     const name = item?.name
     if (typeof name !== 'string' || !allowed.has(name)) {
-      return { status: 'invalid', calls: [], message: 'Tool is not available in this DSH session: ' + String(name ?? '') }
+      return { status: 'invalid', calls: [], repairable: true,
+        message: 'Tool is not available in this DSH session: ' + String(name ?? '') }
     }
     const args = normalizedArguments(item.arguments)
     if (args === null) return { status: 'invalid', calls: [], message: 'Invalid JSON tool arguments for ' + name }

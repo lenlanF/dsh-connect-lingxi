@@ -1,6 +1,6 @@
 {
   "name": "dsh-connect-lingxi",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "private": true,
   "type": "module",
   "description": "Native DSH provider for WPS Lingxi desktop, using the local sign-in and cowork WebSocket channel.",

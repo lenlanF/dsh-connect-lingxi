@@ -284,11 +284,22 @@ export function createLingxiAdapter(deps) {
     return 'TRANSPORT'
   }
 
-  async function runUpstreamTurn(options, messages, signal, credential, activeTools) {
+  async function runUpstreamTurn(options, messages, signal, credential, activeTools, nativeRepairs = []) {
     const native = activeTools.length > 0 && typeof client.chatNative === 'function'
+    // The native API uses real function schemas, not in-band JSON markers.
+    // Its own agent runtime may still propose built-in names (e.g. todo_write)
+    // absent from this DSH turn. An explicit host inventory and retry feedback
+    // help the model choose a permitted tool, without granting any new rights.
+    const nativeContext = native ? [
+      { role: 'system', content: '[DSH HOST TOOL BOUNDARY] Only these function names may be requested in this turn: ' +
+        activeTools.map(tool => tool.name).join(', ') + '. Never call a planning/task tool unless it is in this list. ' +
+        'For planning, use ordinary text. Only the DSH host executes permitted tools; no cloud sandbox execution counts.' },
+      ...nativeRepairs,
+      ...nativeMessages(options),
+    ] : null
     const chatOptions = {
       model: options.model,
-      messages: native ? nativeMessages(options) : messages,
+      messages: native ? nativeContext : messages,
       ...(native ? { tools: openAiTools(activeTools) } : {}),
       ...effortOf(options.reasoningEffort) ? { reasoningEffort: effortOf(options.reasoningEffort) } : {},
       ...signal ? { signal } : {},
@@ -311,7 +322,7 @@ export function createLingxiAdapter(deps) {
           if (parsed.status !== 'calls' || parsed.calls.length !== 1) {
             return { kind: 'invalid', text: '',
               message: 'Lingxi native tool call rejected: ' + (parsed.message ?? 'invalid tool call'),
-              repairable: false }
+              repairable: parsed.repairable === true }
           }
           if (nativeCalls.length >= 8) {
             return { kind: 'invalid', text: '',
@@ -401,8 +412,9 @@ export function createLingxiAdapter(deps) {
 
     try {
       const credential = await resolveCredential()
+      const nativeRepairs = []
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-        const verdict = await runUpstreamTurn(options, messages, options.signal, credential, activeTools)
+        const verdict = await runUpstreamTurn(options, messages, options.signal, credential, activeTools, nativeRepairs)
         if (verdict.kind === 'aborted') {
           yield* closeAll()
           yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'request aborted by caller' } } }
@@ -411,15 +423,25 @@ export function createLingxiAdapter(deps) {
         if (verdict.kind === 'error') { yield* fail('WPS Lingxi upstream error: ' + verdict.message, verdict.code); return }
         if (verdict.kind === 'invalid') {
           if (verdict.repairable && round + 1 < MAX_TOOL_ROUNDS) {
-            // Invalid calls are NEVER submitted to the DSH host. Give the model
-            // the exact schema error and one more chance to return valid JSON.
-            const badFormat = /^(Malformed DSH tool marker|Malformed tool-call JSON|Incomplete or malformed tool-call JSON|Quoted DSH tool marker)/.test(verdict.message)
-            messages.push({ role: 'system', content:
-              (badFormat ? '[TOOL FORMAT VALIDATION FAILED] ' : '[TOOL ARGUMENT VALIDATION FAILED] ') +
-              verdict.message + '. The previous tool call was NOT executed. ' +
-              'Respond with one complete JSON object containing "type":"tool-call", "name", and valid "arguments". ' +
-              'Use only a currently offered host tool and include every required argument. ' +
-              'No XML markers, code fences, partial JSON, or prose. If no available tool can complete the task, explain the limitation. Never claim it succeeded.' })
+            // Never dispatch a rejected or mixed valid/invalid batch to DSH.
+            // Native requests need a native system instruction; adding an
+            // in-band JSON retry marker to 'messages' does not reach nativeChat.
+            if (hasTools && typeof client.chatNative === 'function') {
+              nativeRepairs.push({ role: 'system', content:
+                '[DSH NATIVE TOOL REQUEST REJECTED] ' + verdict.message +
+                '. NONE of the tool calls in that response were executed. ' +
+                'Only these tools are currently available: ' + activeTools.map(t => t.name).join(', ') + '. ' +
+                'Do not request the rejected tool again. Use an available tool with valid arguments, ' +
+                'or explain the limitation in normal text. Do not fabricate tool results.' })
+            } else {
+              const badFormat = /^(Malformed DSH tool marker|Malformed tool-call JSON|Incomplete or malformed tool-call JSON|Quoted DSH tool marker)/.test(verdict.message)
+              messages.push({ role: 'system', content:
+                (badFormat ? '[TOOL FORMAT VALIDATION FAILED] ' : '[TOOL ARGUMENT VALIDATION FAILED] ') +
+                verdict.message + '. The previous tool call was NOT executed. ' +
+                'Respond with one complete JSON object containing "type":"tool-call", "name", and valid "arguments". ' +
+                'Use only a currently offered host tool and include every required argument. ' +
+                'No XML markers, code fences, partial JSON, or prose. If no available tool can complete the task, explain the limitation. Never claim it succeeded.' })
+            }
             continue
           }
           yield* fail('DSH tool protocol rejected: ' + verdict.message, 'TOOL_PROTOCOL')
