@@ -125,6 +125,22 @@ function effortOf(value) {
   return typeof value === 'string' && EFFORTS.has(value) ? value : undefined
 }
 
+/** Host-managed capability discovery: never advertise or execute an unoffered tool. */
+export function toolDiscoveryGuidance(tools) {
+  const names = new Set(visibleTools(tools).map(tool => tool.name))
+  const available = []
+  if (names.has('plugin_manager')) available.push('plugin_manager: inspect installed/disabled plugins')
+  if (names.has('plugin_market')) available.push('plugin_market: search the configured read-only plugin market')
+  const discovery = available.length
+    ? 'Currently offered discovery tools: ' + available.join('; ') + '.'
+    : 'No plugin discovery tool is offered this turn; do not invent or simulate one.'
+  return '[DSH CAPABILITY DISCOVERY] Before declaring a task blocked, use an equivalent currently offered host tool if possible. ' +
+    'A missing optional planning tool such as todo_write is NOT required to do work: plan in normal text and continue. ' +
+    discovery + ' If a necessary capability is genuinely absent, inspect/search only through the offered discovery tools. ' +
+    'Installing or enabling plugins requires the user to explicitly authorize that specific change beforehand. ' +
+    'Never perform plugin installation, privilege changes or tool registration implicitly, and never pretend that an installed plugin is authorized for this turn.'
+}
+
 // ---- DSH tool bridging (option C) ----
 // The cowork upstream has no native external-tools channel (verified: injected
 // tools / tool_result frames are ignored). We bridge by declaring the host's
@@ -259,7 +275,6 @@ export function createLingxiAdapter(deps) {
       id: model,
       name: found?.name ?? model,
       inputModalities: ['text'],
-      toolUpdate: 'addition-only',
       ...found?.contextWindow !== undefined ? { context: { contextWindow: found.contextWindow } } : {},
       ...found?.maxTokens !== undefined ? { defaultMaxTokens: found.maxTokens } : {},
       ...found?.badge !== undefined ? { badge: found.badge } : {},
@@ -294,6 +309,7 @@ export function createLingxiAdapter(deps) {
       { role: 'system', content: '[DSH HOST TOOL BOUNDARY] Only these function names may be requested in this turn: ' +
         activeTools.map(tool => tool.name).join(', ') + '. Never call a planning/task tool unless it is in this list. ' +
         'For planning, use ordinary text. Only the DSH host executes permitted tools; no cloud sandbox execution counts.' },
+      { role: 'system', content: toolDiscoveryGuidance(activeTools) },
       ...nativeRepairs,
       ...nativeMessages(options),
     ] : null
@@ -357,6 +373,9 @@ export function createLingxiAdapter(deps) {
   async function* stream(options) {
     const missing = unavailableHostTools(options.messages)
     const activeTools = visibleTools(options.tools).filter((tool) => !missing.has(tool.name))
+    // DSH core projectToolUpdates sends the complete current declarations when
+    // resolveModel omits toolUpdate. The native Lingxi API cannot interpret
+    // deferred tool-addition/removal history; it must not claim addition-only.
     const hasTools = activeTools.length > 0
     const preamble = toolsPreamble(activeTools)
     const baseMessages = toChatMessages(options)
@@ -422,6 +441,15 @@ export function createLingxiAdapter(deps) {
         }
         if (verdict.kind === 'error') { yield* fail('WPS Lingxi upstream error: ' + verdict.message, verdict.code); return }
         if (verdict.kind === 'invalid') {
+          if (verdict.message.includes('Tool is not available in this DSH session:')) {
+            // Only tool names/counts, never schemas, arguments, credentials or conversation text.
+            const name = /Tool is not available in this DSH session: ([A-Za-z_][\w.-]{0,79})/.exec(verdict.message)?.[1] ?? 'unrecognized'
+            log('warn', 'unoffered native tool rejected name=' + name +
+              ' offered_count=' + activeTools.length +
+              ' todo_write_offered=' + activeTools.some(t => t.name === 'todo_write') +
+              ' plugin_market_offered=' + activeTools.some(t => t.name === 'plugin_market') +
+              ' plugin_manager_offered=' + activeTools.some(t => t.name === 'plugin_manager'))
+          }
           if (verdict.repairable && round + 1 < MAX_TOOL_ROUNDS) {
             // Never dispatch a rejected or mixed valid/invalid batch to DSH.
             // Native requests need a native system instruction; adding an

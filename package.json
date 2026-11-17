@@ -1,6 +1,6 @@
 {
   "name": "dsh-connect-lingxi",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "private": true,
   "type": "module",
   "description": "Native DSH provider for WPS Lingxi desktop, using the local sign-in and cowork WebSocket channel.",
@@ -19,7 +19,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test tests/adapter.test.mjs tests/cowork.test.mjs tests/failure-code.test.mjs tests/host-tools.test.mjs tests/index.test.mjs tests/routes.test.mjs tests/tool-loop.test.mjs tests/upstream.test.mjs tests/schema-validation.test.mjs tests/host-availability.test.mjs tests/marker-recovery.test.mjs tests/dsh-native-tool-result.test.mjs tests/native-transport.test.mjs tests/native-fallback.test.mjs",
+    "test": "node --test tests/adapter.test.mjs tests/cowork.test.mjs tests/failure-code.test.mjs tests/host-tools.test.mjs tests/index.test.mjs tests/routes.test.mjs tests/tool-loop.test.mjs tests/upstream.test.mjs tests/schema-validation.test.mjs tests/host-availability.test.mjs tests/marker-recovery.test.mjs tests/dsh-native-tool-result.test.mjs tests/native-transport.test.mjs tests/native-fallback.test.mjs tests/tool-inventory.test.mjs",
     "test:machine": "node --experimental-sqlite --test tests/credential.test.mjs tests/pool.test.mjs"
   },
   "dsh": {

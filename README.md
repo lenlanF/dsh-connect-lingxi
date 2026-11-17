@@ -1,5 +1,12 @@
 # DSH Connect Lingxi
 
+## 0.5.8：DSH 工具声明同步与可用能力发现（2026-11-17）
+- **根因方向已核实：** DSH Desktop 已安装源代码 `@deepseek-ai/dsh-llm/src/content.ts` 的 `projectToolUpdates()` 在 `toolUpdate` 缺失时，会发送即时可用的完整工具定义并过滤不支持的 developer 工具更新；此前本插件声明 `addition-only`，却没有消费 `tool-addition` 历史内容。新版本取消不实声明，采用 DSH 官方即时声明路径。
+- DSH 的 `dsh-tool-todo` 确实注册 `todo_write`，桌面 Profile 的 `tool-todo` 配置已启用；**尚没有失败当轮原始工具快照**，因此不能断言工具在哪一层丢失或此改动能百分百消除该问题。
+- 仅对本轮实际收到的工具提供原生 JSON Schema。缺少可选计划工具时允许文本规划，不阻塞主任务；如任务确实需要新能力，模型只可通过本轮已提供的 `plugin_market` 搜索、`plugin_manager` 查看已安装插件。新增安装/启用必须先由用户明确授权；插件本身不会搜索外部仓库、下载、安装或改变权限。
+- 无效的未知工具调用仍由适配器拒绝，并在安全续跑中向模型返回当前允许的工具；仅在遇到未知工具时记录受限诊断（工具名、当轮数量、todo/market/manager 是否可用），绝不记录工具参数、账号凭据、聊天内容。
+- 本地新增工具清单跨轮变化、原生有效 `todo_write`、发现能力限制、诊断脱敏测试。真实 Lingxi API 已返回结构正确的 DSH `run_code` 请求（没有本机执行）。**发布不代表已通过完整 DSH Agent 开发任务验收**。
+
 DSH Desktop provider adapter for WPS Lingxi (local 0.5.0 source snapshot).
 
 ## Features
@@ -24,7 +31,7 @@ WPS upstream behavior varies; tool-call compatibility is verified with offline f
 
 **工具参数校验补丁（2026-11-16）**：提交 DSH 工具调用之前，校验 JSON Schema 的必填字段、类型、枚举及嵌套属性；对漏填的参数提供至多 3 轮模型纠错机会，持续失败则安全拒绝。工具结果的错误状态会明确标记，避免将失败误报为成功。
 
-**DSH Connect Lingxi** 是将 WPS 灵犀接入 DeepSeek Harness Desktop 的社区插件（v0.5.7）。提供流式模型调用、账号池、余额信息和 DSH 工具协议桥接。非 WPS 或 DeepSeek 官方项目。
+**DSH Connect Lingxi** 是将 WPS 灵犀接入 DeepSeek Harness Desktop 的社区插件（v0.5.8）。提供流式模型调用、账号池、余额信息和 DSH 工具协议桥接。非 WPS 或 DeepSeek 官方项目。
 
 ### 核心功能
 
@@ -42,7 +49,7 @@ cd dsh-connect-lingxi
 npm test
 ```
 
-净化版离线测试 **离线测试通过**。另有 `npm run test:machine` 测试依赖真实 WPS 本机会话与 SQLite；运行可能受登录状态及数据库锁影响。需要兼容的 DSH Desktop，插件入口为 `src/index.mjs`，管理页面 `client.js`。
+净化版离线测试 **离线测试通过（发布副本）**。另有 `npm run test:machine` 测试依赖真实 WPS 本机会话与 SQLite；运行可能受登录状态及数据库锁影响。需要兼容的 DSH Desktop，插件入口为 `src/index.mjs`，管理页面 `client.js`。
 
 ### 安全限制
 
