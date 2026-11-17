@@ -1,5 +1,13 @@
 # DSH Connect Lingxi
 
+## 0.5.9：输入框模型选择旁的灵犀智点余额（2026-11-17）
+
+- 参考已安装 WorkBuddy 5.24.8 的 `conversation.input.right`（模型选择器前、按 provider 限制渲染）和 `modelSelection` 投影，实现 **“✦ 灵犀 N 智点”**。只在当前会话选择 `lingxi` 时显示；选择 WorkBuddy/其他提供商时自动隐藏，不干扰原模型倍率徽标。
+- 新增仅本机环回可访问的 `GET /plugins/dsh-connect-lingxi/credits`，以及用户点击刷新时才调用的 `POST /plugins/dsh-connect-lingxi/credits/refresh`。前者使用已有余额缓存，后者强制重读上游余额。普通显示每五分钟自动轮询，实际缓存周期仍尊重用户设置。
+- 余额读取复用真实 `credit_type=total` 接口，经现有 `pool` 账号选择规则确定当前使用账号；只显示该账号剩余智点，不把不同账号余额相加，也不把模型倍率或促销标识当成余额。未知余额显示 `—`，合法零余额显示 `0`。
+- 点击余额徽标可查看脱敏的多账号余额明细，标记当前使用账号并手动刷新。返回内容不包含 `wps_sid`、账号 ID、Cookie、逐笔授权数据及诊断路径。新增组件与接口自动化测试，真实本机余额接口读取得到有效数字（不在日志/文档写具体值）。
+- 本版本源码、离线测试及上游只读验收完成后，仍需用户在 DSH Desktop 安装 0.5.9 并目视确认本机插槽显示效果。不会热修改正在使用的 0.5.8。
+
 ## 0.5.8：DSH 工具声明同步与可用能力发现（2026-11-17）
 - **根因方向已核实：** DSH Desktop 已安装源代码 `@deepseek-ai/dsh-llm/src/content.ts` 的 `projectToolUpdates()` 在 `toolUpdate` 缺失时，会发送即时可用的完整工具定义并过滤不支持的 developer 工具更新；此前本插件声明 `addition-only`，却没有消费 `tool-addition` 历史内容。新版本取消不实声明，采用 DSH 官方即时声明路径。
 - DSH 的 `dsh-tool-todo` 确实注册 `todo_write`，桌面 Profile 的 `tool-todo` 配置已启用；**尚没有失败当轮原始工具快照**，因此不能断言工具在哪一层丢失或此改动能百分百消除该问题。
@@ -31,7 +39,7 @@ WPS upstream behavior varies; tool-call compatibility is verified with offline f
 
 **工具参数校验补丁（2026-11-16）**：提交 DSH 工具调用之前，校验 JSON Schema 的必填字段、类型、枚举及嵌套属性；对漏填的参数提供至多 3 轮模型纠错机会，持续失败则安全拒绝。工具结果的错误状态会明确标记，避免将失败误报为成功。
 
-**DSH Connect Lingxi** 是将 WPS 灵犀接入 DeepSeek Harness Desktop 的社区插件（v0.5.8）。提供流式模型调用、账号池、余额信息和 DSH 工具协议桥接。非 WPS 或 DeepSeek 官方项目。
+**DSH Connect Lingxi** 是将 WPS 灵犀接入 DeepSeek Harness Desktop 的社区插件（v0.5.9）。提供流式模型调用、账号池、余额信息和 DSH 工具协议桥接。非 WPS 或 DeepSeek 官方项目。
 
 ### 核心功能
 

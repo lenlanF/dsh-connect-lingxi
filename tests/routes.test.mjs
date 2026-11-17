@@ -49,8 +49,10 @@ function request(method, body = undefined, remoteAddress = '127.0.0.1') {
 test('registers every loopback route', () => {
   const { ctx, routes } = serverHarness()
   const dispose = registerLingxiRoutes(ctx, fakePool())
-  assert.equal(routes.size, 15)
+  assert.equal(routes.size, 17)
   assert.ok(routes.has(PREFIX + '/status'))
+  assert.ok(routes.has(PREFIX + '/credits'))
+  assert.ok(routes.has(PREFIX + '/credits/refresh'))
   assert.ok(routes.has(PREFIX + '/account/toggle'))
   dispose()
   assert.equal(routes.size, 0)
@@ -95,6 +97,6 @@ test('credentials never appear in status output', async () => {
 test('loopback helper accepts IPv6 and rejects LAN', () => {
   const r = response()
   assert.equal(loopback({ socket: { remoteAddress: '::1' } }, r), true)
-  assert.equal(loopback({ socket: { remoteAddress: '203.0.113.10' } }, r), false)
+  assert.equal(loopback({ socket: { remoteAddress: '10.0.0.5' } }, r), false)
   assert.equal(r.out.status, 403)
 })

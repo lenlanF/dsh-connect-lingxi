@@ -380,12 +380,12 @@ export function createLingxiAccountPool (options) {
   }
 
   /** Best-effort structured balance; scalar credits stays a compat mirror. */
-  async function ensureCredits (settings) {
+  async function ensureCredits (settings, force = false) {
     if (!upstream) return
     const hasBalance = typeof upstream.fetchBalance === 'function'
     if (!hasBalance && typeof upstream.fetchCredits !== 'function') return
     const ttl = Math.max(1, settings.pollIntervalMinutes) * 60000
-    if (creditsAt && Date.now() - creditsAt < ttl) return
+    if (!force && creditsAt && Date.now() - creditsAt < ttl) return
     const accounts = eligibleAccounts()
     if (!accounts.length) return
     let changed = false
@@ -451,6 +451,19 @@ export function createLingxiAccountPool (options) {
         out.diagnostics.lastError = diagnostics.lastError || scanErrors.join('; ')
       }
       return scrubSecrets(out, secrets())
+    })
+  }
+
+  /** Cheap composer-only balance read. No model catalog or task-center query.
+   * Force bypasses the configured balance TTL only for an explicit user refresh.
+   */
+  async function creditsStatus (force = false) {
+    return serialize(async function () {
+      await ensureRefreshedSafe()
+      await ensureCredits(cloneSettings(state.settings), force === true)
+      return { accounts: orderedAccounts().map(function (account) {
+        return redactAccount(account)
+      }) }
     })
   }
 
@@ -704,6 +717,7 @@ export function createLingxiAccountPool (options) {
   }
   // Explicit auto-timer control without widening the frozen LingxiAccountPool key set.
   Object.defineProperty(pool, 'startAutoCheckin', { value: startAutoCheckin, enumerable: false })
+  Object.defineProperty(pool, 'creditsStatus', { value: creditsStatus, enumerable: false })
   if (opts.autoStart === true) startAutoCheckin()
   return pool
 }

@@ -80,6 +80,124 @@ window.__ModuleLoader__.load({
       return h('span', { style: { ...style.badge, ...tone } }, props.children)
     }
 
+
+    const CREDIT_POLL_MS = 5 * 60 * 1000
+    function formatCredits(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—'
+      return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value)
+    }
+
+    /** Owns the readout only while this chat's selected DSH provider is lingxi.
+     * The shell supplies useProjection to the slot component. No background
+     * balance request happens while another provider is selected. */
+    function LingxiCreditsGate(props) {
+      const projection = typeof props.useProjection === 'function'
+        ? props.useProjection('modelSelection') : null
+      const selected = projection?.next ?? projection?.lastUsed
+      if (selected?.provider !== 'lingxi') return null
+      return h(LingxiComposerCredits)
+    }
+
+    function LingxiComposerCredits() {
+      const [data, setData] = React.useState(null)
+      const [error, setError] = React.useState(false)
+      const [open, setOpen] = React.useState(false)
+      const [busy, setBusy] = React.useState(false)
+      const alive = React.useRef(true)
+      const inFlight = React.useRef(false)
+      const latest = React.useRef(0)
+
+      const refresh = React.useCallback(async (force = false) => {
+        if (inFlight.current) return
+        inFlight.current = true
+        setBusy(true)
+        const generation = ++latest.current
+        try {
+          const response = await fetch(PREFIX + (force ? '/credits/refresh' : '/credits'), {
+            method: force ? 'POST' : 'GET', headers: { accept: 'application/json' },
+            credentials: 'same-origin', cache: 'no-store',
+          })
+          if (!response.ok) throw new Error('HTTP ' + response.status)
+          const result = await response.json()
+          if (!alive.current || generation !== latest.current) return
+          if (result?.provider !== 'lingxi' || !Array.isArray(result.accounts)) throw new Error('Invalid balance data')
+          setData(result)
+          setError(false)
+        } catch {
+          if (alive.current && generation === latest.current) setError(true)
+        } finally {
+          inFlight.current = false
+          if (alive.current) setBusy(false)
+        }
+      }, [])
+
+      React.useEffect(() => {
+        alive.current = true
+        refresh()
+        const timer = setInterval(refresh, CREDIT_POLL_MS)
+        return () => { alive.current = false; ++latest.current; clearInterval(timer) }
+      }, [refresh])
+
+      const credits = data?.credits
+      const account = data?.activeIndex >= 0 ? data?.accounts?.[data.activeIndex] : null
+      const label = '灵犀 ' + formatCredits(credits) + ' 智点'
+      const subtitle = error ? '余额刷新失败，显示上次已知结果' :
+        account ? ('当前账号：' + account.label) : '没有可用的灵犀账号'
+      const pill = {
+        border: '1px solid var(--border-color, rgba(156,163,175,.35))',
+        borderRadius: '999px', padding: '3px 8px', whiteSpace: 'nowrap',
+        background: 'transparent', color: 'inherit', font: 'inherit',
+        fontSize: '11px', cursor: 'pointer',
+      }
+      return h('span', { style: { position: 'relative', display: 'inline-flex', alignItems: 'center' },
+        'data-lingxi-credits': 'true' },
+        h('button', { type: 'button', style: pill,
+          title: label + ' · ' + subtitle + ' · 点击查看明细',
+          'aria-label': label + '，查看账号智点余额',
+          'aria-expanded': open, onClick: () => setOpen(value => !value) },
+          '✦ ', label, busy ? ' · …' : '', error ? ' !' : ''),
+        open ? h('div', { role: 'dialog', 'aria-label': '灵犀智点余额明细',
+          style: { position: 'absolute', zIndex: 200, bottom: 'calc(100% + 9px)',
+            right: 0, width: 'min(310px, 84vw)', maxHeight: '350px',
+            overflowY: 'auto', border: '1px solid var(--border-color, #555)',
+            borderRadius: '10px', padding: '12px',
+            boxShadow: '0 6px 20px rgba(0,0,0,.3)',
+            color: 'var(--text-primary, inherit)',
+            background: 'var(--card-bg, #222)' } },
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            marginBottom: '8px', gap: '8px' } },
+            h('strong', { style: { fontSize: '13px' } }, '灵犀 · 智点余额'),
+            h('button', { type: 'button', style: pill, onClick: () => setOpen(false),
+              'aria-label': '关闭余额明细' }, '×')
+          ),
+          error ? h('div', { role: 'status', style: { color: '#ed9f50', fontSize: '11px' } },
+            '刷新失败，以下可能是上次数据') : null,
+          !data?.accounts?.length ? h('div', { style: { fontSize: '12px', opacity: .7 } },
+            busy ? '余额读取中…' : '暂无账号或余额数据') :
+            data.accounts.map((item, index) => h('div', {
+              key: index, style: { display: 'flex', justifyContent: 'space-between',
+                alignItems: 'flex-start', gap: '10px', padding: '6px 0',
+                borderBottom: '1px solid var(--border-color, #444)' }
+            },
+              h('div', { style: { minWidth: 0, fontSize: '12px', overflowWrap: 'anywhere' } },
+                item.label || '账号 ' + (index + 1),
+                index === data.activeIndex ? h('span', { style: { color: '#4fb58e', fontSize: '10px' } }, ' · 当前使用') : null,
+                !item.enabled ? h('span', { style: { opacity: .6, fontSize: '10px' } }, ' · 已禁用') : null
+              ),
+              h('strong', { style: { fontSize: '12px', whiteSpace: 'nowrap' } },
+                formatCredits(item.credits), ' 智点')
+            )),
+          h('div', { style: { display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', marginTop: '10px', gap: '8px' } },
+            h('span', { style: { fontSize: '10px', opacity: .65 } },
+              '仅显示当前使用账号余额，不合并不同账号'),
+            h('button', { type: 'button', style: pill, disabled: busy,
+              onClick: () => refresh(true) }, busy ? '刷新中' : '刷新')
+          )
+        ) : null
+      )
+    }
+
     function Section(props) {
       const settingsSurface = props?.surface === 'settings'
 
@@ -381,6 +499,14 @@ window.__ModuleLoader__.load({
           locale: SECTION_ID,
           inject: injected,
         }, Section))
+        // A provider-scoped list slot immediately before the DSH model picker.
+        // Register even when WorkBuddy is installed; the gate only renders for lingxi.
+        ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+          name: 'conversation.input.right',
+          id: 'dsh-connect-lingxi-composer-credits',
+          order: 5,
+          locale: SECTION_ID,
+        }, LingxiCreditsGate))
       },
     }
   },

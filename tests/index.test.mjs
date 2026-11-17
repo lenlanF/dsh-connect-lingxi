@@ -52,7 +52,7 @@ test('applyWith registers provider, directory, discovery and all loopback routes
   assert.equal(calls.providers[0][0].provider, 'lingxi')
   assert.equal(calls.discoveries[0][0], 'dsh-connect-lingxi')
   assert.deepEqual(calls.injects[0], ['webServer'])
-  assert.equal(calls.routes.length, 15)
+  assert.equal(calls.routes.length, 17)
   assert.ok(calls.routes.includes(PREFIX + '/status'))
   const models = await calls.discoveries[0][1]({ provider: 'lingxi' })
   assert.equal(models[0].id, 'qwen3.8_flash')

@@ -27,6 +27,37 @@ function safe(error) {
   return message.length > 300 ? message.slice(0, 300) : message
 }
 
+/** Only the selected account's spendable credits are shown in the composer.
+ * Never add balances across accounts: the provider sends requests using one
+ * credential (the first enabled, eligible account in pool order).
+ * Expose no ids, cookie lengths, tokens, grants or diagnostic paths.
+ */
+export function creditReadout(status) {
+  const accounts = Array.isArray(status?.accounts) ? status.accounts : []
+  const summaries = accounts.map(account => {
+    const known = typeof account?.credits === 'number' && Number.isFinite(account.credits) && account.credits >= 0
+    const balance = account?.balance
+    return {
+      label: String(account?.label ?? '').slice(0, 80),
+      enabled: account?.enabled === true,
+      state: String(account?.state ?? 'unknown'),
+      credits: known ? account.credits : null,
+      bonus: known && Number.isFinite(balance?.bonus) ? balance.bonus : null,
+      purchased: known && Number.isFinite(balance?.purchased) ? balance.purchased : null,
+      lastCheckedAt: Number.isFinite(account?.lastCheckedAt) ? account.lastCheckedAt : null,
+    }
+  })
+  const activeIndex = accounts.findIndex(account =>
+    account?.enabled === true && !['session_dead', 'unavailable'].includes(account?.state) &&
+    Number.isFinite(account?.sidLength) && account.sidLength > 0)
+  return {
+    provider: 'lingxi',
+    activeIndex,
+    credits: activeIndex < 0 ? null : summaries[activeIndex].credits,
+    accounts: summaries,
+  }
+}
+
 /** Register GET/POST routes. Returns a disposer. */
 export function registerLingxiRoutes(ctx, pool) {
   if (!ctx?.webServer?.register) return () => {}
@@ -48,6 +79,10 @@ export function registerLingxiRoutes(ctx, pool) {
   }
 
   route('/status', ['GET'], async (_req, res) => json(res, 200, await pool.status()))
+  const creditsData = (force) => typeof pool.creditsStatus === 'function'
+    ? pool.creditsStatus(force) : pool.status()
+  route('/credits', ['GET'], async (_req, res) => json(res, 200, creditReadout(await creditsData(false))))
+  route('/credits/refresh', ['POST'], async (_req, res) => json(res, 200, creditReadout(await creditsData(true))))
   route('/refresh', ['POST'], async (_req, res) => { await pool.refresh(); json(res, 200, await pool.status()) })
   route('/account', ['POST'], async (_req, res, body) => {
     if (!body || typeof body.label !== 'string' || typeof body.sid !== 'string' || !body.sid.trim()) return json(res, 400, { error: 'label and sid required' })
